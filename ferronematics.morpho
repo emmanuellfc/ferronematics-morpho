@@ -1,0 +1,219 @@
+// OOP Implementation of Ferronematics Code //
+import plot
+import meshtools
+import optimize
+import povray
+import vtk
+
+class FerroSimulation {
+  init(t1=1,t2=1,TA=1,H=1,NS=nil) {
+    self.t1 = t1
+    self.t2 = t2
+    self.H = nil
+    self.TA = nil
+    self.NS = nil
+    self.mesh = nil
+    self.director = nil
+  }
+
+  loadMesh(fname) {
+    self.mesh = Mesh(fname)
+  }
+
+  initialRandomField(NS = 0.1) {
+    self.director = Field(self.mesh, fn (x,y,z) Matrix([NS*random(1), NS*random(1)]))
+    return self.director
+  }
+
+  setupSelections() {
+    self.bnd = Selection(self.mesh, boundary=true)
+    self.bnd.addgrade(1)
+    return self.bnd
+  }
+
+  landauFunctional(x, q) {
+    var qn = q.norm()
+    var q2 = qn * qn
+    return self.t1*q2 + self.t2*q2*q2
+  }
+
+  tangentialAnchoring(x, q) {
+    var t = tangent()
+    var wxx = t[0]*t[0] - 0.5
+    var wxy = t[0]*t[1]
+    return (q[0]-wxx)^2+(q[1]-wxy)^2
+  }
+
+  divergence(x, f) {
+    var df = grad(f)
+    var divf = df[0][0] + df[1][1] // fx,x + fy,y
+    return divf 
+  }
+
+  flexo(x, f) {
+    var df = grad(f)
+    var divf = df[0][0] + df[1][1] // fx,x + fy,y
+    var f2 = f.norm()
+    return -f2*divf 
+  }
+
+  setupProblem() {
+    self.problem = OptimizationProblem(self.mesh)
+
+    var lEnergy = AreaIntegral(self.landauFunctional, self.director)
+    self.problem.addenergy(lEnergy)
+
+    var fEnergy = AreaIntegral(self.flexo, self.director)
+    self.problem.addenergy(fEnergy)
+
+    var tangentialEnergy = LineIntegral(self.tangentialAnchoring, self.director)
+    self.problem.addenergy(tangentialEnergy, selection=self.bnd, prefactor = self.TA)
+
+    var eEnergy = GradSq(self.director)
+    self.problem.addenergy(eEnergy, prefactor = self.H)
+
+    return self.problem
+  }
+
+  energyProfile(fname) {
+    var names  = ["Landau", "Flexo", "Tangential", "GradSq"]
+    var energies = []
+    for (e in self.problem.energies) {
+      energies.append(e.functional.total(self.mesh))
+    }
+    var f = File(fname, "w")
+    for (i, j in energies) f.write("${names[j]} ${i}")
+    f.close()
+  }
+
+  setupRegularization() {
+    self.rproblem = OptimizationProblem()
+    var leq = EquiElement()
+    self.rproblem.addenergy(leq)
+    return self.rproblem
+  }
+
+  setupOptimizers() {
+    self.fopt = FieldOptimizer(self.problem, self.director)
+    self.fopt.stepsize = 0.001
+    self.fopt.steplimit = 0.1
+    self.fopt.etol = 1e-6
+  }
+
+  hasConverged() {
+    return self.fopt.hasconverged()
+  }
+
+  optimizeField(niter) {
+    self.fopt.conjugategradient(niter)
+  }
+
+  optimizeShape(niter) {
+    self.sopt.relax(1)
+    self.sopt.conjugategradient(niter)
+  }
+
+  regularize(niter) {
+    self.ropt.linesearch(niter)
+  }
+
+  visualizeMesh(grade=nil) {
+    var g = [1], sel = nil
+    if (grade) g = grade
+    if (!islist(g)) g = [ g ]
+    return plotmesh(self.mesh, grade=g)
+  }
+
+  nsToNorm(q) {
+    var S = q.norm()
+    return S
+  }
+
+  normToVector(q) {
+    var S = 2*q.norm()
+    var Q = q/S
+    var nx = sqrt(Q[0]+0.5)
+    var ny = abs(Q[1]/nx)
+    nx = nx*sign(Q[1])
+    return Matrix([nx,ny,0])
+  }
+  
+  visualizeDirector(nn, dl=0.05) {
+    var v = self.mesh.vertexmatrix()
+    var nv = v.dimensions()[1]
+    var g = Graphics()
+    for (i in 0...nv) {
+      var x = v.column(i)
+      g.display(Arrow(x-nn[i]*dl, x+nn[0,i]*dl, aspectratio=0.3))
+    }
+    return g
+  }
+
+  visualize() {
+    var s = Field(self.mesh, 0)
+    var ns = Field(self.mesh, Matrix([1,0,0]))
+    var tot = self.mesh.count()
+    for (i in 0...tot) s[i]=self.nsToNorm(self.director[i])
+    for (i in 0...tot) ns[i]=self.normToVector(self.director[i])
+    var sb  = ScaleBar(posn = [1.2,0,0], length = 0.25, textcolor=White)
+    var g   = plotfield(s, style="interpolate", scalebar = sb, colormap = ViridisMap())
+    var gnn = self.visualizeDirector(ns)
+    var fig = g+gnn
+    return fig
+  }
+  
+  tracer(file_name) {
+    var s = Field(self.mesh, 0)
+    var ns = Field(self.mesh, Matrix([1,0,0]))
+    var tot = self.mesh.count()
+    for (i in 0...tot) s[i]=self.nsToNorm(self.director[i])
+    for (i in 0...tot) ns[i]=self.normToVector(self.director[i])
+    var sb  = ScaleBar(posn = [1.2,0,0], length = 0.15, textcolor=White)
+    var g   = plotfield(s, style="interpolate", scalebar = sb, colormap = ViridisMap())
+    var gnn = self.visualizeDirector(ns)
+    var fig = g+gnn
+    fig.background = Black
+    var pov = POVRaytracer(fig)
+    pov.viewangle = 32
+    pov.light = [Matrix([3,3,10]), Matrix([-3,3,10]), Matrix([0,-3,10])]
+    pov.render(file_name, quiet = true, display=false)
+  }
+
+  expVTK(file_name) {
+    var S = Field(self.mesh, 0) // Initialize to a scalar
+    for (i in 0...self.mesh.count()) S[i]=self.nsToNorm(self.director[i])
+    var nn = Field(self.mesh, Matrix([1,0,0])) // Initialize to some vector
+    for (i in 0...self.mesh.count()) nn[i]=self.normToVector(self.director[i])
+    var vtkFinSol = VTKExporter(nn,fieldname = "directorField")
+    vtkFinSol.addfield(S, fieldname = "ScalarOrder")
+    vtkFinSol.export(file_name)
+    return true
+  }
+}
+
+
+// File manipulation
+fn make_dir(name) {
+  if (Folder.isfolder(name)) {
+    print "Folder exists!"
+    }
+  else {system("mkdir " + name)}
+}
+
+fn move_files(target) {
+  system("mv *.pov ${target} && mv *.png ${target} && mv *.vtk ${target} && mv *.txt ${target}")
+}
+
+// Main optimization loop
+fn optimizationLoop(sim, niter) {
+    print "Initial field iteration:"
+    for (i in 1..niter) {
+        for (j in 1..10) {
+            print "Field iteration ${i}, ${j}"
+            sim.optimizeField(niter)
+            if (sim.hasConverged()) break
+        }
+        if (sim.hasConverged()) break
+    }
+}
+

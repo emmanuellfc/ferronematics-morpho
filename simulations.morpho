@@ -1,0 +1,45 @@
+import "ferronematics.morpho"
+
+// Phenomenological parameters //
+var ITERS = 2000  // Total iterations
+var NS = 0.1      // Noise Strength
+var H = 4.5       //
+var TA = 0.1      // Tangential Anchoring Strength
+var AA = 0.1      // Apolar Anchoring Strength
+var PA = 0.1      // Polar Anchoring Strength
+var T1 = -202.5   // Tau1 Parameter
+var T2 = 40.5142 // Tau1 Parameter
+
+// Start of the simulaton //
+var sim = FerroSimulation()
+sim.NS  = NS
+sim.t1  = T1
+sim.t2  = T2
+sim.TA  = TA
+sim.H   = H
+
+// Load Mesh and Initialize Field //
+sim.loadMesh("dense_disk.mesh")
+sim.initialRandomField()
+
+// Parameter Exploration //
+for (x in -100..0:10) {
+  print "t1: ${x}"
+  // Update Variables //
+  sim.t1 = x
+  var pov_name = "Ferro_Sim_TA_${TA}_T1_${x}_T2_${T2}_H_${H}_.pov"
+  var vtk_name = "Ferro_Sim_TA_${TA}_T1_${x}_T2_${T2}_H_${H}_.vtk" 
+  var energy_file = "Ferro_Sim_TA_${TA}_T1_${x}_T2_${T2}_H_${H}_.txt" 
+  // Setup and Optimize
+  sim.setupSelections()
+  sim.setupProblem()
+  sim.setupOptimizers()
+  optimizationLoop(sim, ITERS)
+  sim.energyProfile(energy_file)
+  sim.tracer(pov_name)
+  sim.expVTK(vtk_name)
+}
+
+var target_dir = "Test_1"
+make_dir(target_dir)
+move_files(target_dir)
